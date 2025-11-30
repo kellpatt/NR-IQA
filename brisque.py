@@ -3,16 +3,22 @@ import cv2
 from scipy.stats import gennorm
 from scipy.special import gamma
 
+"""
+Compute the local mean and variance 
+"""
 def LocalVariance(im, kernelWidth, sigma):
     # Compute local mean and variance
-    mean = cv2.GaussianBlur(im, (7, 7), 7/6)
+    mean = cv2.GaussianBlur(im, (kernelWidth, kernelWidth), sigma)
 
     # Variance = sqrt ( average(im^2) - (average(im))^2 )
-    variance = np.sqrt(cv2.GaussianBlur(im * im, (7, 7), 7/6) - mean**2)
+    result = cv2.GaussianBlur(im * im, (kernelWidth, kernelWidth), sigma) - (mean**2)
+    result = np.maximum(result, 1e-6) # clips small negative numbers (near zero) due to rounding error
+    variance = np.sqrt(result)
+
     return (mean, variance)
 
 def MscnCoefficients(im, mean, variance):
-    outputIm = (im - mean) / (variance + 1)
+    outputIm = (im - mean) / (variance + 1e-6)
     return outputIm
 
 def GetMscnOrientations(mscn):
@@ -33,13 +39,6 @@ def GetMscnOrientations(mscn):
             d1[i, j] = mscn[i, j] * mscn[i+1, j+1]
             d2[i, j] = mscn[i, j] * mscn[i+1, j-1]
 
-    # Fill in border (missing) values
-    """
-    h[:, 0] = h[:, 1]
-    v[:, 0] = v[:, 1]
-    d1[:, 0] = d1[:, 1]
-    d2[:, 0] = d2[:, 1]
-    """
     return h, v, d1, d2
 
 """
@@ -58,6 +57,7 @@ def FitGGD(mscn):
 
     # scipy's gennorm parameterization: pdf ~ beta/(2*scale*Gamma(1/beta)) * exp(-(abs(x-loc)/scale)**beta)
     alpha = scale
+
     return beta, alpha, loc
 
 """
@@ -91,15 +91,15 @@ def FitAGGD(x):
     # Ref [2] Equation 6
     N_l = len(left)
     N_r = len(right)
-    g_l = np.sqrt( 1/N_l * np.sum(left * left))
-    g_r = np.sqrt( 1/N_r * np.sum(right * right))
-    g = g_l / g_r
+    g_l = np.sqrt( 1.0/N_l * np.sum(left * left))
+    g_r = np.sqrt( 1.0/N_r * np.sum(right * right))
+    g = g_l / (g_r + 1e-6) # prevent division by zero
 
     # Estimate r using:
     # r = sum ( x_k ) ^ 2 / sum (x_k ^ 2) for k = 1 to k = N_l + N_r
     # Ref [2] Equation 7
     # Also note: r = R * rho
-    r = np.sum(x) ** 2 / np.sum(x * x)
+    r = np.sum(x) ** 2 / (np.sum(x * x) + 1e-6)
 
     # Calculate R using gamma and r
     # r is also = R * rho
@@ -110,7 +110,11 @@ def FitAGGD(x):
     # rho(R) = Gamma(2/R)^2/(Gamma(1/R)*Gamma(3/R)) - Ref [2] Equation 5
     # alpha = inverse_rho(R) = (Gamma(1/R)*Gamma(3/R)) / Gamma(2/R)^2 - Ref [2] Equation 9 + 5
     # Gamma = the gamma function
-    alpha = ( gamma(1/R) * gamma(3/R) ) / gamma(2/R)**2
+    alpha = ( gamma(1/R) * gamma(3/R) ) / ( gamma(2/R)**2 + 1e-6)
+    alpha_min = 0.2
+    alpha_max = 10.0
+    alpha = max(alpha_min, alpha)
+    alpha = min(alpha_max, alpha)
 
     # Calculate beta_l and beta_r using g and alpha
     # Ref[2] Equation 10
@@ -199,19 +203,14 @@ The score ranges from 0 - 100 (0 = best quality, 100 = worst quality)
 Input: Image to be evaluated
 Returns: score
 """
-def GetBrisqueScore(img):
+def GetBrisqueFeatures(img):
     gray = img
     if (len(img.shape) > 2):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)
 
     (mean, variance) = LocalVariance(gray, 7, 7/6)
     mscn = MscnCoefficients(gray, mean, variance)
 
-    #(h, v, d1, d2) = GetMscnOrientations(mscn)
-    #orientations = [h, v, d1, d2]
     featureVector = GetFeatureVector36x1(mscn)
 
-    cv2.imshow("average img", mean.astype(np.uint8))
-    cv2.waitKey(0)
-
-    return
+    return featureVector
